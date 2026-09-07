@@ -48,7 +48,6 @@ const PaperPage = forwardRef<HTMLDivElement, { pdf: PdfDocument; pageNumber: num
   return <div ref={ref} className="paper-page" data-density={pageNumber === 1 ? 'hard' : 'soft'}>
     {!ready && <div className="page-skeleton" />}
     <div className="canvas-stage"><canvas ref={canvasRef} aria-label={`${pageNumber}페이지`} /></div>
-    <span className="page-folio">{pageNumber}</span>
   </div>;
 });
 
