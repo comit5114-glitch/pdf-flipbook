@@ -85,9 +85,21 @@ export default function Home() {
     if (!context) return;
     const renderSound = () => {
       soundSourceRef.current?.stop();
-      const now = context.currentTime; const length = Math.floor(context.sampleRate * .19); const buffer = context.createBuffer(1, length, context.sampleRate); const data = buffer.getChannelData(0);
-      for (let i = 0; i < length; i += 1) { const fade = Math.pow(1 - i / length, 2.2); data[i] = (Math.random() * 2 - 1) * fade * (.55 + .45 * Math.sin(i / 42)); }
-      const source = context.createBufferSource(); const filter = context.createBiquadFilter(); const gain = context.createGain(); filter.type = 'bandpass'; filter.Q.value = .7; filter.frequency.setValueAtTime(1450, now); filter.frequency.exponentialRampToValueAtTime(360, now + .19); gain.gain.setValueAtTime(.095, now); gain.gain.exponentialRampToValueAtTime(.001, now + .19); source.buffer = buffer; source.connect(filter).connect(gain).connect(context.destination); source.start(now); soundSourceRef.current = source; source.onended = () => { if (soundSourceRef.current === source) soundSourceRef.current = null; };
+      const now = context.currentTime; const duration = .58; const length = Math.floor(context.sampleRate * duration); const buffer = context.createBuffer(1, length, context.sampleRate); const data = buffer.getChannelData(0);
+      let smoothed = 0;
+      for (let i = 0; i < length; i += 1) {
+        const t = i / context.sampleRate;
+        smoothed = smoothed * .72 + (Math.random() * 2 - 1) * .28;
+        const sweep = Math.sin(Math.PI * Math.min(1, t / .42));
+        const flutter = .72 + .16 * Math.sin(t * 82) + .1 * Math.sin(t * 137);
+        const landing = Math.exp(-Math.pow((t - .46) / .055, 2)) * .5;
+        const envelope = (t < .035 ? t / .035 : Math.max(0, 1 - (t - .035) / .54)) * (.2 + .8 * sweep) * flutter + landing;
+        data[i] = smoothed * envelope;
+      }
+      const source = context.createBufferSource(); const highpass = context.createBiquadFilter(); const lowpass = context.createBiquadFilter(); const gain = context.createGain();
+      highpass.type = 'highpass'; highpass.frequency.value = 150; lowpass.type = 'lowpass'; lowpass.Q.value = .45; lowpass.frequency.setValueAtTime(2200, now); lowpass.frequency.exponentialRampToValueAtTime(720, now + .43); lowpass.frequency.exponentialRampToValueAtTime(1350, now + .56);
+      gain.gain.setValueAtTime(.0001, now); gain.gain.exponentialRampToValueAtTime(.11, now + .025); gain.gain.setValueAtTime(.085, now + .32); gain.gain.exponentialRampToValueAtTime(.001, now + duration);
+      source.buffer = buffer; source.playbackRate.value = .96 + Math.random() * .08; source.connect(highpass).connect(lowpass).connect(gain).connect(context.destination); source.start(now); soundSourceRef.current = source; source.onended = () => { if (soundSourceRef.current === source) soundSourceRef.current = null; };
     };
     if (context.state === 'running') renderSound(); else void context.resume().then(renderSound).catch(() => undefined);
   }, [sound, unlockAudio]);
@@ -99,7 +111,8 @@ export default function Home() {
       bookRef.current?.destroy?.();
       const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 240, maxWidth: 700, minHeight: 320, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: pageIndex, autoSize: false, startZIndex: 0 });
       instance.loadFromHTML(bookElementRef.current.querySelectorAll('.paper-page'));
-      instance.on('flip', (event: any) => { setPageIndex(event.data); playFlip(); });
+      instance.on('changeState', (event: any) => { if (event.data === 'flipping') playFlip(); });
+      instance.on('flip', (event: any) => { setPageIndex(event.data); });
       bookRef.current = instance;
     };
     const existing = document.querySelector<HTMLScriptElement>('script[data-page-flip]');
