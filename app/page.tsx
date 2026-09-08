@@ -1,12 +1,13 @@
 'use client';
 
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
-import { BookOpen, ChevronLeft, ChevronRight, Clock3, Copy, Expand, FileUp, Grid2X2, House, Maximize2, RotateCcw, Share2, Trash2, Volume2, VolumeX, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BookOpen, ChevronLeft, ChevronRight, Clock3, Copy, Ellipsis, Expand, FileUp, Grid2X2, House, Maximize2, RotateCcw, RotateCw, Share2, Trash2, Volume2, VolumeX, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 
 type PdfDocument = import('pdfjs-dist').PDFDocumentProxy;
 type PdfPage = import('pdfjs-dist').PDFPageProxy;
@@ -87,13 +88,30 @@ function Thumbnail({ pdf, pageNumber, selected, onClick }: { pdf: PdfDocument; p
 
 export default function Home({ sharedToken }: { sharedToken?: string }) {
   const inputRef = useRef<HTMLInputElement>(null); const bookRef = useRef<any>(null); const bookElementRef = useRef<HTMLDivElement>(null); const viewerRef = useRef<HTMLDivElement>(null); const audioRef = useRef<HTMLAudioElement | null>(null); const currentFileRef = useRef<File | null>(null); const savingRef = useRef(false); const audioPrimedRef = useRef(false); const flipSoundModeRef = useRef<'sound' | 'silent' | null>(null); const shouldPlayFlipSoundRef = useRef(false);
-  const isSingle = useMedia('(max-width: 780px)');
+  const isMobile = useMedia('(max-width: 780px), (max-width: 1024px) and (pointer: coarse)');
+  const isPortrait = useMedia('(orientation: portrait)');
+  const isSingle = isMobile && isPortrait;
   const [pdf, setPdf] = useState<PdfDocument | null>(null); const [title, setTitle] = useState(''); const [pageCount, setPageCount] = useState(0); const [pageIndex, setPageIndex] = useState(0);
   const [ratio, setRatio] = useState(.707); const [viewport, setViewport] = useState({ width: 520, height: 735 }); const [zoom, setZoom] = useState(1); const [sound, setSound] = useState(true);
   const [thumbsOpen, setThumbsOpen] = useState(false); const [loading, setLoading] = useState(false); const [prepared, setPrepared] = useState(0); const [error, setError] = useState('');
-  const [recentBooks, setRecentBooks] = useState<StoredBook[]>([]); const [pendingFile, setPendingFile] = useState<File | null>(null); const [storageChoiceOpen, setStorageChoiceOpen] = useState(false); const [shareMenuOpen, setShareMenuOpen] = useState(false); const [shareUrl, setShareUrl] = useState(''); const [sharedExpiry, setSharedExpiry] = useState(''); const [saving, setSaving] = useState(false); const [activeBook, setActiveBook] = useState<StoredBook | null>(null); const [shareSourceBook, setShareSourceBook] = useState<StoredBook | null>(null); const [initialPage, setInitialPage] = useState(0); const [deleteBook, setDeleteBook] = useState<StoredBook | null>(null); const [notice, setNotice] = useState('');
-  const measure = useCallback(() => { const availableW = Math.max(280, window.innerWidth - (isSingle ? 28 : 96)); const availableH = Math.max(360, window.innerHeight - 178); const width = Math.floor(Math.min(availableH * ratio, availableW / (isSingle ? 1 : 2), 650)); setViewport({ width, height: Math.floor(width / ratio) }); }, [isSingle, ratio]);
-  useEffect(() => { measure(); window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure); }, [measure]);
+  const [recentBooks, setRecentBooks] = useState<StoredBook[]>([]); const [pendingFile, setPendingFile] = useState<File | null>(null); const [storageChoiceOpen, setStorageChoiceOpen] = useState(false); const [shareMenuOpen, setShareMenuOpen] = useState(false); const [shareUrl, setShareUrl] = useState(''); const [sharedExpiry, setSharedExpiry] = useState(''); const [saving, setSaving] = useState(false); const [activeBook, setActiveBook] = useState<StoredBook | null>(null); const [shareSourceBook, setShareSourceBook] = useState<StoredBook | null>(null); const [deleteBook, setDeleteBook] = useState<StoredBook | null>(null); const [notice, setNotice] = useState('');
+  const measure = useCallback(() => {
+    const screenWidth = window.visualViewport?.width ?? window.innerWidth;
+    const screenHeight = window.visualViewport?.height ?? window.innerHeight;
+    const horizontalSpace = isMobile ? (isSingle ? 12 : 16) : 96;
+    const chromeSpace = isMobile ? (isSingle ? 124 : 96) : 178;
+    const availableW = Math.max(240, screenWidth - horizontalSpace);
+    const availableH = Math.max(240, screenHeight - chromeSpace);
+    const maximumPageWidth = isMobile ? Number.POSITIVE_INFINITY : 650;
+    const width = Math.floor(Math.min(availableH * ratio, availableW / (isSingle ? 1 : 2), maximumPageWidth));
+    setViewport({ width, height: Math.floor(width / ratio) });
+  }, [isMobile, isSingle, ratio]);
+  useEffect(() => {
+    let timer = 0;
+    const scheduleMeasure = () => { window.clearTimeout(timer); timer = window.setTimeout(measure, 100); };
+    measure(); window.addEventListener('resize', scheduleMeasure); window.visualViewport?.addEventListener('resize', scheduleMeasure);
+    return () => { window.clearTimeout(timer); window.removeEventListener('resize', scheduleMeasure); window.visualViewport?.removeEventListener('resize', scheduleMeasure); };
+  }, [measure]);
   useEffect(() => {
     const savedSound = window.localStorage.getItem('flipbook-sound-enabled');
     if (savedSound !== null) setSound(savedSound === 'true');
@@ -120,7 +138,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     const mount = () => {
       if (disposed || !bookElementRef.current || !(window as any).St?.PageFlip) return;
       bookRef.current?.destroy?.();
-      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 240, maxWidth: 700, minHeight: 320, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: initialPage, autoSize: false, startZIndex: 0 });
+      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 180, maxWidth: 700, minHeight: 250, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: pageIndex, autoSize: false, startZIndex: 0 });
       instance.loadFromHTML(bookElementRef.current.querySelectorAll('.paper-page'));
       instance.on('changeState', (event: any) => {
         if (event.data === 'flipping') shouldPlayFlipSoundRef.current = flipSoundModeRef.current !== 'silent';
@@ -137,10 +155,10 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     else if (existing) existing.addEventListener('load', mount, { once: true });
     else { const script = document.createElement('script'); script.src = '/page-flip.browser.js'; script.dataset.pageFlip = 'true'; script.onload = mount; document.head.appendChild(script); }
     return () => { disposed = true; existing?.removeEventListener('load', mount); bookRef.current?.destroy?.(); bookRef.current = null; };
-  }, [initialPage, isSingle, pageCount, pdf, playFlip, viewport.height, viewport.width]);
+  }, [isSingle, pageCount, pdf, playFlip, viewport.height, viewport.width]);
   const loadPdf = useCallback(async (file: Blob, bookTitle: string, savedPage = 1) => {
     setLoading(true); setPrepared(0); setError(''); setPdf(null);
-    try { const browserPdfPath = '/pdf.min.mjs'; const importBrowserModule = new Function('path', 'return import(path)') as (path: string) => Promise<any>; const pdfjs = await importBrowserModule(browserPdfPath); pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; const bytes = new Uint8Array(await file.arrayBuffer()); const task = pdfjs.getDocument({ data: bytes }); task.onPassword = (updatePassword: (password: string) => void, reason: number) => { const password = window.prompt(reason === 1 ? '이 PDF는 암호가 필요합니다. 암호를 입력해주세요.' : '암호가 올바르지 않습니다. 다시 입력해주세요.'); if (password === null) task.destroy(); else updatePassword(password); }; const document = await task.promise; const first = await document.getPage(1); const size = first.getViewport({ scale: 1 }); const requested = Number.isFinite(savedPage) ? Math.floor(savedPage) - 1 : 0; const start = Math.max(0, Math.min(requested, document.numPages - 1)); setRatio(size.width / size.height); await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); setTitle(bookTitle.replace(/\.pdf$/i, '')); setPageCount(document.numPages); setInitialPage(start); setPageIndex(start); setZoom(1); setPdf(document); return { document, first }; }
+    try { const browserPdfPath = '/pdf.min.mjs'; const importBrowserModule = new Function('path', 'return import(path)') as (path: string) => Promise<any>; const pdfjs = await importBrowserModule(browserPdfPath); pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; const bytes = new Uint8Array(await file.arrayBuffer()); const task = pdfjs.getDocument({ data: bytes }); task.onPassword = (updatePassword: (password: string) => void, reason: number) => { const password = window.prompt(reason === 1 ? '이 PDF는 암호가 필요합니다. 암호를 입력해주세요.' : '암호가 올바르지 않습니다. 다시 입력해주세요.'); if (password === null) task.destroy(); else updatePassword(password); }; const document = await task.promise; const first = await document.getPage(1); const size = first.getViewport({ scale: 1 }); const requested = Number.isFinite(savedPage) ? Math.floor(savedPage) - 1 : 0; const start = Math.max(0, Math.min(requested, document.numPages - 1)); setRatio(size.width / size.height); await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); setTitle(bookTitle.replace(/\.pdf$/i, '')); setPageCount(document.numPages); setPageIndex(start); setZoom(1); setPdf(document); return { document, first }; }
     catch (cause: any) { setLoading(false); setError(cause?.name === 'PasswordException' ? '암호가 필요한 PDF입니다. 암호를 확인해주세요.' : 'PDF 파일을 열 수 없습니다.'); }
   }, []);
   const openFile = useCallback((file?: File) => { if (!file) return; if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { setError('PDF 파일을 선택해주세요.'); return; } setPendingFile(file); setStorageChoiceOpen(true); }, []);
@@ -184,6 +202,15 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
   const flip = useCallback((where: 'first' | 'prev' | 'next' | 'last') => { const api = bookRef.current; if (!api) return; flipSoundModeRef.current = where === 'prev' || where === 'next' ? 'sound' : 'silent'; if (where === 'first') api.flip(0); if (where === 'prev') api.flipPrev(); if (where === 'next') api.flipNext(); if (where === 'last') api.flip(pageCount - 1); }, [pageCount]);
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') primeAudio(); if (event.key === 'ArrowLeft') flip('prev'); if (event.key === 'ArrowRight') flip('next'); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [flip, primeAudio]);
   const toggleSound = useCallback(() => { setSound((current) => { const next = !current; window.localStorage.setItem('flipbook-sound-enabled', String(next)); if (!next && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } else if (next) primeAudio(); return next; }); }, [primeAudio]);
+  const requestLandscape = useCallback(async () => {
+    let locked = false;
+    try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); } catch { /* Fullscreen availability varies by mobile browser. */ }
+    try {
+      const orientation = screen.orientation as ScreenOrientation & { lock?: (value: string) => Promise<void> };
+      if (orientation?.lock) { await orientation.lock('landscape'); locked = true; }
+    } catch { /* The user can still rotate the device manually. */ }
+    if (!locked) setNotice('스마트폰을 가로로 돌려보세요.');
+  }, []);
   useEffect(() => { if (!activeBook) return; const timer = window.setTimeout(() => { void fetch(`/api/books/${activeBook.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId(), lastPage: pageIndex + 1 }) }); }, 750); return () => window.clearTimeout(timer); }, [activeBook, pageIndex]);
   useEffect(() => { if (sharedToken && pdf) window.localStorage.setItem(`shared-book-${sharedToken}-last-page`, String(pageIndex + 1)); }, [pageIndex, pdf, sharedToken]);
   const openShare = useCallback(async (book: StoredBook) => { try { setError(''); const response = await fetch(`/api/books/${book.id}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: book.ownerVisitorId ?? visitorId() }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setShareSourceBook(book); setShareUrl(`${window.location.origin}/share/${data.shareToken}`); setSharedExpiry(data.expiresAt); setShareMenuOpen(true); } catch (cause: any) { setError(cause?.message ?? '공유 링크를 만들지 못했습니다.'); } }, []);
@@ -207,20 +234,33 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     <AlertDialog open={Boolean(deleteBook)} onOpenChange={(open) => !open && setDeleteBook(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>이 책을 삭제하시겠습니까?</AlertDialogTitle><AlertDialogDescription>삭제하면 다시 복구할 수 없습니다.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={() => void removeBook()}>삭제</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 
-  return <main ref={viewerRef} className="reader-shell" onPointerDownCapture={primeAudio}>
+  return <main ref={viewerRef} className={`reader-shell ${isMobile ? isPortrait ? 'is-mobile is-mobile-portrait' : 'is-mobile is-mobile-landscape' : ''}`} onPointerDownCapture={primeAudio}>
     {!sharedToken && <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => { void openFile(event.target.files?.[0]); event.target.value = ''; }} />}
     <header className="reader-header">
       <div className="title-block"><BookOpen size={19} /><div><h1 title={title}>{title}</h1>{sharedToken && sharedExpiry && <small>이 책은 {expiryDate(sharedExpiry)}까지 볼 수 있습니다.</small>}</div></div>
       <div className="toolbar">
-        <Button variant="outline" size="sm" onClick={() => { window.location.href = '/'; }}><House /><span>홈</span></Button>
-        <Button variant="outline" size="sm" onClick={() => setThumbsOpen(true)}><Grid2X2 /><span>페이지 목록</span></Button>
+        <Button className="desktop-home-button" variant="outline" size="sm" onClick={() => { window.location.href = '/'; }}><House /><span>홈</span></Button>
+        <Button className="page-list-button" variant="outline" size="sm" aria-label="페이지 목록" onClick={() => setThumbsOpen(true)}><Grid2X2 /><span>페이지 목록</span></Button>
         <div className="button-cluster"><Button variant="ghost" size="icon-sm" aria-label="축소" onClick={() => setZoom((z) => Math.max(.7, +(z - .1).toFixed(1)))}><ZoomOut /></Button><span className="zoom-label">{Math.round(zoom * 100)}%</span><Button variant="ghost" size="icon-sm" aria-label="확대" onClick={() => setZoom((z) => Math.min(2, +(z + .1).toFixed(1)))}><ZoomIn /></Button></div>
-        <Button variant="outline" size="sm" onClick={() => setZoom(1)}><Expand /><span>화면 맞춤</span></Button>
-        <Button variant="outline" size="sm" aria-label={sound ? '🔊 소리 켜짐' : '🔇 소리 꺼짐'} onClick={toggleSound}>{sound ? <Volume2 /> : <VolumeX />}<span>{sound ? '소리 켜짐' : '소리 꺼짐'}</span></Button>
-        <Button variant="outline" size="sm" onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 /><span>크게 보기</span></Button>
+        <Button className="fit-button" variant="outline" size="sm" aria-label="화면 맞춤" onClick={() => setZoom(1)}><Expand /><span>화면 맞춤</span></Button>
+        <Button className="sound-button" variant="outline" size="sm" aria-label={sound ? '🔊 소리 켜짐' : '🔇 소리 꺼짐'} onClick={toggleSound}>{sound ? <Volume2 /> : <VolumeX />}<span>{sound ? '소리 켜짐' : '소리 꺼짐'}</span></Button>
+        <Button className="mobile-landscape-button" variant="outline" size="sm" onClick={() => void requestLandscape()}><RotateCw /><span>가로 보기</span></Button>
+        <Button className="fullscreen-button" variant="outline" size="sm" onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 /><span>크게 보기</span></Button>
         {!sharedToken && <Button className="retention-button" variant="outline" size="sm" disabled={Boolean(activeBook) || saving} onClick={() => currentFileRef.current && void savePdf(currentFileRef.current)}><Clock3 /><span>{saving ? '보관 중…' : activeBook ? '7일 보관 중' : '7일 보관'}</span></Button>}
         {!sharedToken && <Button className="share-button" variant="outline" size="sm" disabled={saving} onClick={() => void shareCurrentPdf()}><Share2 /><span>{saving ? '공유 준비 중…' : '공유하기'}</span></Button>}
-        {!sharedToken && <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}><RotateCcw /><span>다른 PDF</span></Button>}
+        {!sharedToken && <Button className="other-pdf-button" variant="outline" size="sm" onClick={() => inputRef.current?.click()}><RotateCcw /><span>다른 PDF</span></Button>}
+        <DropdownMenu>
+          <DropdownMenuTrigger className="mobile-more-button" aria-label="더보기"><Ellipsis /></DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="mobile-more-menu">
+            <DropdownMenuItem onClick={() => { window.location.href = '/'; }}><House />홈</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setZoom((z) => Math.max(.7, +(z - .1).toFixed(1)))}><ZoomOut />축소</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => setZoom((z) => Math.min(2, +(z + .1).toFixed(1)))}><ZoomIn />확대</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 />크게 보기</DropdownMenuItem>
+            {!sharedToken && <DropdownMenuSeparator />}
+            {!sharedToken && <DropdownMenuItem disabled={Boolean(activeBook) || saving || !currentFileRef.current} onClick={() => currentFileRef.current && void savePdf(currentFileRef.current)}><Clock3 />{activeBook ? '7일 보관 중' : '7일 보관'}</DropdownMenuItem>}
+            {!sharedToken && <DropdownMenuItem onClick={() => inputRef.current?.click()}><RotateCcw />다른 PDF</DropdownMenuItem>}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
     </header>
     <section className={`book-viewport ${zoom > 1 ? 'is-zoomed' : ''}`}><div className="ambient-shadow" /><div className="zoom-stage" style={{ width: viewport.width * (isSingle ? 1 : 2), height: viewport.height, transform: `scale(${zoom})` }}><div key={`${title}-${viewport.width}-${isSingle}`} ref={bookElementRef} className="flip-book">{Array.from({ length: pageCount }, (_, index) => <PaperPage key={index + 1} pdf={pdf} pageNumber={index + 1} width={viewport.width} height={viewport.height} active={Math.abs(index - pageIndex) <= 4 || index === 0} onReady={onReady} />)}</div>{!isSingle && <div className="book-spine" aria-hidden="true" />}</div></section>
