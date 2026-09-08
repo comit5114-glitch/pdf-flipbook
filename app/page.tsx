@@ -90,14 +90,17 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
   const inputRef = useRef<HTMLInputElement>(null); const bookRef = useRef<any>(null); const bookElementRef = useRef<HTMLDivElement>(null); const viewerRef = useRef<HTMLDivElement>(null); const audioRef = useRef<HTMLAudioElement | null>(null); const currentFileRef = useRef<File | null>(null); const savingRef = useRef(false); const audioPrimedRef = useRef(false); const flipSoundModeRef = useRef<'sound' | 'silent' | null>(null); const shouldPlayFlipSoundRef = useRef(false);
   const isMobile = useMedia('(max-width: 780px), (max-width: 1024px) and (pointer: coarse)');
   const isPortrait = useMedia('(orientation: portrait)');
-  const isSingle = isMobile && isPortrait;
+  const [forcedLandscape, setForcedLandscape] = useState(false);
+  const isSingle = isMobile && isPortrait && !forcedLandscape;
   const [pdf, setPdf] = useState<PdfDocument | null>(null); const [title, setTitle] = useState(''); const [pageCount, setPageCount] = useState(0); const [pageIndex, setPageIndex] = useState(0);
   const [ratio, setRatio] = useState(.707); const [viewport, setViewport] = useState({ width: 520, height: 735 }); const [zoom, setZoom] = useState(1); const [sound, setSound] = useState(true);
   const [thumbsOpen, setThumbsOpen] = useState(false); const [loading, setLoading] = useState(false); const [prepared, setPrepared] = useState(0); const [error, setError] = useState('');
   const [recentBooks, setRecentBooks] = useState<StoredBook[]>([]); const [pendingFile, setPendingFile] = useState<File | null>(null); const [storageChoiceOpen, setStorageChoiceOpen] = useState(false); const [shareMenuOpen, setShareMenuOpen] = useState(false); const [shareUrl, setShareUrl] = useState(''); const [sharedExpiry, setSharedExpiry] = useState(''); const [saving, setSaving] = useState(false); const [activeBook, setActiveBook] = useState<StoredBook | null>(null); const [shareSourceBook, setShareSourceBook] = useState<StoredBook | null>(null); const [deleteBook, setDeleteBook] = useState<StoredBook | null>(null); const [notice, setNotice] = useState('');
   const measure = useCallback(() => {
-    const screenWidth = window.visualViewport?.width ?? window.innerWidth;
-    const screenHeight = window.visualViewport?.height ?? window.innerHeight;
+    const physicalWidth = window.visualViewport?.width ?? window.innerWidth;
+    const physicalHeight = window.visualViewport?.height ?? window.innerHeight;
+    const screenWidth = forcedLandscape && isPortrait ? physicalHeight : physicalWidth;
+    const screenHeight = forcedLandscape && isPortrait ? physicalWidth : physicalHeight;
     const horizontalSpace = isMobile ? (isSingle ? 12 : 16) : 96;
     const chromeSpace = isMobile ? (isSingle ? 124 : 96) : 178;
     const availableW = Math.max(240, screenWidth - horizontalSpace);
@@ -105,7 +108,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     const maximumPageWidth = isMobile ? Number.POSITIVE_INFINITY : 650;
     const width = Math.floor(Math.min(availableH * ratio, availableW / (isSingle ? 1 : 2), maximumPageWidth));
     setViewport({ width, height: Math.floor(width / ratio) });
-  }, [isMobile, isSingle, ratio]);
+  }, [forcedLandscape, isMobile, isPortrait, isSingle, ratio]);
   useEffect(() => {
     let timer = 0;
     const scheduleMeasure = () => { window.clearTimeout(timer); timer = window.setTimeout(measure, 100); };
@@ -194,6 +197,12 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     if (sharedToken) return;
     void fetch(`/api/books?visitorId=${encodeURIComponent(visitorId())}`).then(async (response) => { if (!response.ok) throw new Error(); setRecentBooks((await response.json()).books); }).catch(() => setError('저장된 책을 불러오지 못했습니다.'));
   }, [sharedToken]);
+  useEffect(() => { if (!isPortrait) setForcedLandscape(false); }, [isPortrait]);
+  useEffect(() => {
+    if (!notice && !error) return;
+    const timer = window.setTimeout(() => { setNotice(''); setError(''); }, error ? 4500 : 2800);
+    return () => window.clearTimeout(timer);
+  }, [error, notice]);
   useEffect(() => {
     if (!sharedToken) return; setLoading(true); setError(''); setActiveBook(null); currentFileRef.current = null;
     void fetch(`/api/share/${encodeURIComponent(sharedToken)}`).then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfBlob = await downloadPdf(data); const savedPage = Number(window.localStorage.getItem(`shared-book-${sharedToken}-last-page`)) || 1; setSharedExpiry(data.book.expiresAt); await loadPdf(pdfBlob, data.book.title, savedPage); }).catch((cause) => { setLoading(false); setError(cause?.message ?? '유효하지 않은 공유 링크입니다.'); });
@@ -203,14 +212,14 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
   useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') primeAudio(); if (event.key === 'ArrowLeft') flip('prev'); if (event.key === 'ArrowRight') flip('next'); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [flip, primeAudio]);
   const toggleSound = useCallback(() => { setSound((current) => { const next = !current; window.localStorage.setItem('flipbook-sound-enabled', String(next)); if (!next && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } else if (next) primeAudio(); return next; }); }, [primeAudio]);
   const requestLandscape = useCallback(async () => {
-    let locked = false;
+    if (forcedLandscape) { setForcedLandscape(false); return; }
+    setForcedLandscape(true);
     try { if (!document.fullscreenElement) await document.documentElement.requestFullscreen(); } catch { /* Fullscreen availability varies by mobile browser. */ }
     try {
       const orientation = screen.orientation as ScreenOrientation & { lock?: (value: string) => Promise<void> };
-      if (orientation?.lock) { await orientation.lock('landscape'); locked = true; }
+      if (orientation?.lock) await orientation.lock('landscape');
     } catch { /* The user can still rotate the device manually. */ }
-    if (!locked) setNotice('스마트폰을 가로로 돌려보세요.');
-  }, []);
+  }, [forcedLandscape]);
   useEffect(() => { if (!activeBook) return; const timer = window.setTimeout(() => { void fetch(`/api/books/${activeBook.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId(), lastPage: pageIndex + 1 }) }); }, 750); return () => window.clearTimeout(timer); }, [activeBook, pageIndex]);
   useEffect(() => { if (sharedToken && pdf) window.localStorage.setItem(`shared-book-${sharedToken}-last-page`, String(pageIndex + 1)); }, [pageIndex, pdf, sharedToken]);
   const openShare = useCallback(async (book: StoredBook) => { try { setError(''); const response = await fetch(`/api/books/${book.id}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: book.ownerVisitorId ?? visitorId() }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setShareSourceBook(book); setShareUrl(`${window.location.origin}/share/${data.shareToken}`); setSharedExpiry(data.expiresAt); setShareMenuOpen(true); } catch (cause: any) { setError(cause?.message ?? '공유 링크를 만들지 못했습니다.'); } }, []);
@@ -234,7 +243,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     <AlertDialog open={Boolean(deleteBook)} onOpenChange={(open) => !open && setDeleteBook(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>이 책을 삭제하시겠습니까?</AlertDialogTitle><AlertDialogDescription>삭제하면 다시 복구할 수 없습니다.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={() => void removeBook()}>삭제</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 
-  return <main ref={viewerRef} className={`reader-shell ${isMobile ? isPortrait ? 'is-mobile is-mobile-portrait' : 'is-mobile is-mobile-landscape' : ''}`} onPointerDownCapture={primeAudio}>
+  return <main ref={viewerRef} className={`reader-shell ${isMobile ? isSingle ? 'is-mobile is-mobile-portrait' : `is-mobile is-mobile-landscape${forcedLandscape ? ' is-forced-landscape' : ''}` : ''}`} onPointerDownCapture={primeAudio}>
     {!sharedToken && <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => { void openFile(event.target.files?.[0]); event.target.value = ''; }} />}
     <header className="reader-header">
       <div className="title-block"><BookOpen size={19} /><div><h1 title={title}>{title}</h1>{sharedToken && sharedExpiry && <small>이 책은 {expiryDate(sharedExpiry)}까지 볼 수 있습니다.</small>}</div></div>
@@ -244,7 +253,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
         <div className="button-cluster"><Button variant="ghost" size="icon-sm" aria-label="축소" onClick={() => setZoom((z) => Math.max(.7, +(z - .1).toFixed(1)))}><ZoomOut /></Button><span className="zoom-label">{Math.round(zoom * 100)}%</span><Button variant="ghost" size="icon-sm" aria-label="확대" onClick={() => setZoom((z) => Math.min(2, +(z + .1).toFixed(1)))}><ZoomIn /></Button></div>
         <Button className="fit-button" variant="outline" size="sm" aria-label="화면 맞춤" onClick={() => setZoom(1)}><Expand /><span>화면 맞춤</span></Button>
         <Button className="sound-button" variant="outline" size="sm" aria-label={sound ? '🔊 소리 켜짐' : '🔇 소리 꺼짐'} onClick={toggleSound}>{sound ? <Volume2 /> : <VolumeX />}<span>{sound ? '소리 켜짐' : '소리 꺼짐'}</span></Button>
-        <Button className="mobile-landscape-button" variant="outline" size="sm" onClick={() => void requestLandscape()}><RotateCw /><span>가로 보기</span></Button>
+        <Button className="mobile-landscape-button" variant="outline" size="sm" aria-label={forcedLandscape ? '세로 보기' : '가로 보기'} onClick={() => void requestLandscape()}><RotateCw /><span>{forcedLandscape ? '세로 보기' : '가로 보기'}</span></Button>
         <Button className="fullscreen-button" variant="outline" size="sm" onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 /><span>크게 보기</span></Button>
         {!sharedToken && <Button className="retention-button" variant="outline" size="sm" disabled={Boolean(activeBook) || saving} onClick={() => currentFileRef.current && void savePdf(currentFileRef.current)}><Clock3 /><span>{saving ? '보관 중…' : activeBook ? '7일 보관 중' : '7일 보관'}</span></Button>}
         {!sharedToken && <Button className="share-button" variant="outline" size="sm" disabled={saving} onClick={() => void shareCurrentPdf()}><Share2 /><span>{saving ? '공유 준비 중…' : '공유하기'}</span></Button>}
