@@ -137,8 +137,12 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     if (savingRef.current) return null; savingRef.current = true; setSaving(true); setError(''); setNotice(shareOnly ? '공유 링크를 준비하는 중입니다…' : 'PDF를 7일간 보관하는 중입니다…');
     try {
       const ownerVisitorId = shareOnly ? `share-${crypto.randomUUID()}` : visitorId();
-      const form = new FormData(); form.append('file', file); form.append('visitorId', ownerVisitorId); form.append('title', file.name.replace(/\.pdf$/i, ''));
-      const response = await fetch('/api/books', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error);
+      const response = await fetch('/api/books', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId, title: file.name.replace(/\.pdf$/i, ''), contentType: 'application/pdf' }) });
+      const responseText = await response.text(); let data: any = {}; try { data = responseText ? JSON.parse(responseText) : {}; } catch { throw new Error(response.ok ? '업로드 준비 응답을 확인할 수 없습니다.' : `업로드를 준비하지 못했습니다. (${response.status})`); }
+      if (!response.ok) throw new Error(data.error ?? `업로드를 준비하지 못했습니다. (${response.status})`);
+      const uploadBody = new FormData(); uploadBody.append('cacheControl', '3600'); uploadBody.append('', file);
+      const uploadResponse = await fetch(data.uploadUrl, { method: 'PUT', headers: { 'x-upsert': 'false' }, body: uploadBody });
+      if (!uploadResponse.ok) { void fetch(`/api/books/${data.book.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId }) }); throw new Error(`PDF를 저장하지 못했습니다. (${uploadResponse.status})`); }
       const book = { ...data.book, ownerVisitorId } as StoredBook;
       if (shareOnly) { setShareSourceBook(book); setNotice('공유 링크를 준비했습니다.'); }
       else { setShareSourceBook(null); setActiveBook(book); setRecentBooks((books) => [book, ...books.filter((item) => item.id !== book.id)]); setNotice(`이 PDF를 7일 동안 보관합니다. ${expiryDate(book.expiresAt)}까지 보관됩니다.`); }

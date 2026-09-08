@@ -40,11 +40,16 @@ export async function db(path: string, init?: RequestInit) {
   }));
 }
 
-export async function uploadPdf(path: string, file: File) {
+export async function signedPdfUploadUrl(path: string) {
   const { url } = settings();
-  await checked(await fetch(`${url}/storage/v1/object/${BUCKET}/${path}`, {
-    method: 'POST', headers: headers({ 'Content-Type': 'application/pdf', 'x-upsert': 'false' }), body: file,
+  const response = await checked(await fetch(`${url}/storage/v1/object/upload/sign/${BUCKET}/${path}`, {
+    method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: '{}',
   }));
+  const data = await response.json() as { url?: string; signedURL?: string; signedUrl?: string };
+  const signed = data.url ?? data.signedURL ?? data.signedUrl;
+  if (!signed) throw new Error('PDF 업로드 주소를 만들지 못했습니다.');
+  if (signed.startsWith('http')) return signed;
+  return signed.startsWith('/storage/v1/') ? `${url}${signed}` : `${url}/storage/v1${signed.startsWith('/') ? signed : `/${signed}`}`;
 }
 
 export async function deletePdf(path: string) {
