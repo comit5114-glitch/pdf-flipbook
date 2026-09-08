@@ -3,6 +3,8 @@ import 'server-only';
 const SUPABASE_URL = process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
 const SERVICE_KEY = process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY;
 const BUCKET = 'temporary-pdfs';
+export const PDF_PART_SIZE = 45 * 1024 * 1024;
+const MAX_PDF_PARTS = 20;
 
 export type TemporaryBook = {
   id: string;
@@ -40,7 +42,29 @@ export async function db(path: string, init?: RequestInit) {
   }));
 }
 
-export async function signedPdfUploadUrl(path: string) {
+export function pdfStoragePlan(id: string, fileSize: number) {
+  const partCount = Math.max(1, Math.ceil(fileSize / PDF_PART_SIZE));
+  if (partCount > MAX_PDF_PARTS) throw new Error('PDF 파일이 너무 큽니다. 900MB 이하의 파일을 사용해주세요.');
+  if (partCount === 1) {
+    const path = `temporary/${id}/book.pdf`;
+    return { storagePath: path, objectPaths: [path] };
+  }
+  const basePath = `temporary/${id}/parts`;
+  return {
+    storagePath: `multipart:${partCount}:${basePath}`,
+    objectPaths: Array.from({ length: partCount }, (_, index) => `${basePath}/${String(index).padStart(4, '0')}.pdf`),
+  };
+}
+
+function pdfObjectPaths(storagePath: string) {
+  const match = storagePath.match(/^multipart:(\d+):(.+)$/);
+  if (!match) return [storagePath];
+  const count = Number(match[1]); const basePath = match[2];
+  if (!Number.isInteger(count) || count < 1 || count > MAX_PDF_PARTS) throw new Error('저장된 PDF 정보가 올바르지 않습니다.');
+  return Array.from({ length: count }, (_, index) => `${basePath}/${String(index).padStart(4, '0')}.pdf`);
+}
+
+async function signedPdfUploadUrl(path: string) {
   const { url } = settings();
   const response = await checked(await fetch(`${url}/storage/v1/object/upload/sign/${BUCKET}/${path}`, {
     method: 'POST', headers: headers({ 'Content-Type': 'application/json' }), body: '{}',
@@ -52,10 +76,14 @@ export async function signedPdfUploadUrl(path: string) {
   return signed.startsWith('/storage/v1/') ? `${url}${signed}` : `${url}/storage/v1${signed.startsWith('/') ? signed : `/${signed}`}`;
 }
 
+export async function signedPdfUploadUrls(paths: string[]) {
+  return Promise.all(paths.map(signedPdfUploadUrl));
+}
+
 export async function deletePdf(path: string) {
   const { url } = settings();
   await checked(await fetch(`${url}/storage/v1/object/${BUCKET}`, {
-    method: 'DELETE', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prefixes: [path] }),
+    method: 'DELETE', headers: headers({ 'Content-Type': 'application/json' }), body: JSON.stringify({ prefixes: pdfObjectPaths(path) }),
   }));
 }
 
@@ -69,6 +97,10 @@ export async function signedPdfUrl(path: string) {
   if (!signed) throw new Error('PDF 주소를 만들지 못했습니다.');
   if (signed.startsWith('http')) return signed;
   return signed.startsWith('/storage/v1/') ? `${url}${signed}` : `${url}/storage/v1${signed.startsWith('/') ? signed : `/${signed}`}`;
+}
+
+export async function signedPdfUrls(storagePath: string) {
+  return Promise.all(pdfObjectPaths(storagePath).map(signedPdfUrl));
 }
 
 export function jsonError(error: unknown) {

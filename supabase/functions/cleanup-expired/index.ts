@@ -17,7 +17,11 @@ Deno.serve(async (request: Request) => {
   const expired = await expiredResponse.json(); const deleted: string[] = []; const failed: Array<{ id: string; reason: string }> = [];
   for (const book of expired) {
     try {
-      const storageResponse = await fetch(`${supabaseUrl}/storage/v1/object/temporary-pdfs`, { method: 'DELETE', headers: auth, body: JSON.stringify({ prefixes: [book.storage_path] }) });
+      const multipart = String(book.storage_path).match(/^multipart:(\d+):(.+)$/);
+      const prefixes = multipart
+        ? Array.from({ length: Number(multipart[1]) }, (_, index) => `${multipart[2]}/${String(index).padStart(4, '0')}.pdf`)
+        : [book.storage_path];
+      const storageResponse = await fetch(`${supabaseUrl}/storage/v1/object/temporary-pdfs`, { method: 'DELETE', headers: auth, body: JSON.stringify({ prefixes }) });
       if (!storageResponse.ok && storageResponse.status !== 404) throw new Error(`Storage ${storageResponse.status}`);
       const dbResponse = await fetch(`${supabaseUrl}/rest/v1/temporary_books?id=eq.${encodeURIComponent(book.id)}`, { method: 'DELETE', headers: auth });
       if (!dbResponse.ok) throw new Error(`Database ${dbResponse.status}`);

@@ -12,6 +12,17 @@ type PdfDocument = import('pdfjs-dist').PDFDocumentProxy;
 type PdfPage = import('pdfjs-dist').PDFPageProxy;
 type StoredBook = { id: string; title: string; createdAt: string; lastViewedAt: string; expiresAt: string; lastPage: number; ownerVisitorId?: string };
 
+async function downloadPdf(data: { pdfUrl?: string; pdfUrls?: string[] }) {
+  const urls = data.pdfUrls?.length ? data.pdfUrls : data.pdfUrl ? [data.pdfUrl] : [];
+  if (!urls.length) throw new Error('이 책의 파일을 찾을 수 없습니다.');
+  const parts: Blob[] = [];
+  for (const url of urls) {
+    const response = await fetch(url); if (!response.ok) throw new Error('이 책의 파일을 찾을 수 없습니다.');
+    parts.push(await response.blob());
+  }
+  return new Blob(parts, { type: 'application/pdf' });
+}
+
 function visitorId() {
   const key = 'flipbook-visitor-id'; let value = window.localStorage.getItem(key);
   if (!value) { value = crypto.randomUUID(); window.localStorage.setItem(key, value); }
@@ -137,12 +148,17 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     if (savingRef.current) return null; savingRef.current = true; setSaving(true); setError(''); setNotice(shareOnly ? '공유 링크를 준비하는 중입니다…' : 'PDF를 7일간 보관하는 중입니다…');
     try {
       const ownerVisitorId = shareOnly ? `share-${crypto.randomUUID()}` : visitorId();
-      const response = await fetch('/api/books', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId, title: file.name.replace(/\.pdf$/i, ''), contentType: 'application/pdf' }) });
+      const response = await fetch('/api/books', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId, title: file.name.replace(/\.pdf$/i, ''), contentType: 'application/pdf', fileSize: file.size }) });
       const responseText = await response.text(); let data: any = {}; try { data = responseText ? JSON.parse(responseText) : {}; } catch { throw new Error(response.ok ? '업로드 준비 응답을 확인할 수 없습니다.' : `업로드를 준비하지 못했습니다. (${response.status})`); }
       if (!response.ok) throw new Error(data.error ?? `업로드를 준비하지 못했습니다. (${response.status})`);
-      const uploadBody = new FormData(); uploadBody.append('cacheControl', '3600'); uploadBody.append('', file);
-      const uploadResponse = await fetch(data.uploadUrl, { method: 'PUT', headers: { 'x-upsert': 'false' }, body: uploadBody });
-      if (!uploadResponse.ok) { void fetch(`/api/books/${data.book.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId }) }); throw new Error(`PDF를 저장하지 못했습니다. (${uploadResponse.status})`); }
+      const uploadUrls = Array.isArray(data.uploadUrls) ? data.uploadUrls as string[] : [];
+      const partSize = Number(data.partSize); if (!uploadUrls.length || !Number.isFinite(partSize)) throw new Error('PDF 업로드 정보를 확인할 수 없습니다.');
+      for (let index = 0; index < uploadUrls.length; index += 1) {
+        const part = file.slice(index * partSize, Math.min(file.size, (index + 1) * partSize), 'application/pdf');
+        const uploadBody = new FormData(); uploadBody.append('cacheControl', '3600'); uploadBody.append('', part, `book-${index + 1}.pdf`);
+        const uploadResponse = await fetch(uploadUrls[index], { method: 'PUT', headers: { 'x-upsert': 'false' }, body: uploadBody });
+        if (!uploadResponse.ok) { void fetch(`/api/books/${data.book.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: ownerVisitorId }) }); throw new Error(`PDF를 저장하지 못했습니다. (${uploadResponse.status})`); }
+      }
       const book = { ...data.book, ownerVisitorId } as StoredBook;
       if (shareOnly) { setShareSourceBook(book); setNotice('공유 링크를 준비했습니다.'); }
       else { setShareSourceBook(null); setActiveBook(book); setRecentBooks((books) => [book, ...books.filter((item) => item.id !== book.id)]); setNotice(`이 PDF를 7일 동안 보관합니다. ${expiryDate(book.expiresAt)}까지 보관됩니다.`); }
@@ -154,7 +170,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     const file = pendingFile; if (!file) return; setStorageChoiceOpen(false); const loaded = await loadPdf(file, file.name);
     if (!loaded) { setPendingFile(null); return; } currentFileRef.current = file; setActiveBook(null); setShareSourceBook(null); if (store) await savePdf(file); setPendingFile(null);
   }, [loadPdf, pendingFile, savePdf]);
-  const continueBook = useCallback(async (book: StoredBook) => { try { setLoading(true); setError(''); const response = await fetch(`/api/books/${book.id}?visitorId=${encodeURIComponent(visitorId())}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfResponse = await fetch(data.pdfUrl); if (!pdfResponse.ok) throw new Error(pdfResponse.status === 404 ? '이 책의 파일을 찾을 수 없습니다.' : '저장된 책을 불러오지 못했습니다.'); currentFileRef.current = null; setShareSourceBook(null); setActiveBook({ ...book, ...data.book }); await loadPdf(await pdfResponse.blob(), data.book.title, data.book.lastPage); } catch (cause: any) { setLoading(false); setError(cause?.message ?? '저장된 책을 불러오지 못했습니다.'); } }, [loadPdf]);
+  const continueBook = useCallback(async (book: StoredBook) => { try { setLoading(true); setError(''); const response = await fetch(`/api/books/${book.id}?visitorId=${encodeURIComponent(visitorId())}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfBlob = await downloadPdf(data); currentFileRef.current = null; setShareSourceBook(null); setActiveBook({ ...book, ...data.book }); await loadPdf(pdfBlob, data.book.title, data.book.lastPage); } catch (cause: any) { setLoading(false); setError(cause?.message ?? '저장된 책을 불러오지 못했습니다.'); } }, [loadPdf]);
   useEffect(() => { if (sharedToken) return; const bookId = window.location.pathname.match(/^\/book\/([^/]+)/)?.[1]; if (bookId) void continueBook({ id: bookId, title: '', createdAt: '', lastViewedAt: '', expiresAt: '', lastPage: 1 }); }, [continueBook, sharedToken]);
   useEffect(() => {
     if (sharedToken) return;
@@ -162,7 +178,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
   }, [sharedToken]);
   useEffect(() => {
     if (!sharedToken) return; setLoading(true); setError(''); setActiveBook(null); currentFileRef.current = null;
-    void fetch(`/api/share/${encodeURIComponent(sharedToken)}`).then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfResponse = await fetch(data.pdfUrl); if (!pdfResponse.ok) throw new Error('이 책의 파일을 찾을 수 없습니다.'); const savedPage = Number(window.localStorage.getItem(`shared-book-${sharedToken}-last-page`)) || 1; setSharedExpiry(data.book.expiresAt); await loadPdf(await pdfResponse.blob(), data.book.title, savedPage); }).catch((cause) => { setLoading(false); setError(cause?.message ?? '유효하지 않은 공유 링크입니다.'); });
+    void fetch(`/api/share/${encodeURIComponent(sharedToken)}`).then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfBlob = await downloadPdf(data); const savedPage = Number(window.localStorage.getItem(`shared-book-${sharedToken}-last-page`)) || 1; setSharedExpiry(data.book.expiresAt); await loadPdf(pdfBlob, data.book.title, savedPage); }).catch((cause) => { setLoading(false); setError(cause?.message ?? '유효하지 않은 공유 링크입니다.'); });
   }, [loadPdf, sharedToken]);
   const onReady = useCallback((page: number) => { setPrepared((value) => Math.max(value, page)); if (page === 1) setLoading(false); }, []);
   const flip = useCallback((where: 'first' | 'prev' | 'next' | 'last') => { const api = bookRef.current; if (!api) return; flipSoundModeRef.current = where === 'prev' || where === 'next' ? 'sound' : 'silent'; if (where === 'first') api.flip(0); if (where === 'prev') api.flipPrev(); if (where === 'next') api.flipNext(); if (where === 'last') api.flip(pageCount - 1); }, [pageCount]);
