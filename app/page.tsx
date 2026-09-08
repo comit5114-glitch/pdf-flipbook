@@ -91,7 +91,8 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
   const isMobile = useMedia('(max-width: 780px), (max-width: 1024px) and (pointer: coarse)');
   const isPortrait = useMedia('(orientation: portrait)');
   const [forcedLandscape, setForcedLandscape] = useState(false);
-  const isSingle = isMobile && isPortrait && !forcedLandscape;
+  const mobilePortrait = isMobile && isPortrait && !forcedLandscape;
+  const isSingle = false;
   const [pdf, setPdf] = useState<PdfDocument | null>(null); const [title, setTitle] = useState(''); const [pageCount, setPageCount] = useState(0); const [pageIndex, setPageIndex] = useState(0);
   const [ratio, setRatio] = useState(.707); const [viewport, setViewport] = useState({ width: 520, height: 735 }); const [zoom, setZoom] = useState(1); const [sound, setSound] = useState(true);
   const [thumbsOpen, setThumbsOpen] = useState(false); const [loading, setLoading] = useState(false); const [prepared, setPrepared] = useState(0); const [error, setError] = useState('');
@@ -101,14 +102,14 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     const physicalHeight = window.visualViewport?.height ?? window.innerHeight;
     const screenWidth = forcedLandscape && isPortrait ? physicalHeight : physicalWidth;
     const screenHeight = forcedLandscape && isPortrait ? physicalWidth : physicalHeight;
-    const horizontalSpace = isMobile ? (isSingle ? 12 : 16) : 96;
-    const chromeSpace = isMobile ? (isSingle ? 124 : 96) : 178;
+    const horizontalSpace = isMobile ? (mobilePortrait ? 12 : 16) : 96;
+    const chromeSpace = isMobile ? (mobilePortrait ? 124 : 96) : 178;
     const availableW = Math.max(240, screenWidth - horizontalSpace);
     const availableH = Math.max(240, screenHeight - chromeSpace);
     const maximumPageWidth = isMobile ? Number.POSITIVE_INFINITY : 650;
     const width = Math.floor(Math.min(availableH * ratio, availableW / (isSingle ? 1 : 2), maximumPageWidth));
     setViewport({ width, height: Math.floor(width / ratio) });
-  }, [forcedLandscape, isMobile, isPortrait, isSingle, ratio]);
+  }, [forcedLandscape, isMobile, isPortrait, mobilePortrait, ratio]);
   useEffect(() => {
     let timer = 0;
     const scheduleMeasure = () => { window.clearTimeout(timer); timer = window.setTimeout(measure, 100); };
@@ -141,7 +142,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     const mount = () => {
       if (disposed || !bookElementRef.current || !(window as any).St?.PageFlip) return;
       bookRef.current?.destroy?.();
-      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 180, maxWidth: 700, minHeight: 250, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: pageIndex, autoSize: false, startZIndex: 0 });
+      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 130, maxWidth: 700, minHeight: 180, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: pageIndex, autoSize: false, startZIndex: 0 });
       instance.loadFromHTML(bookElementRef.current.querySelectorAll('.paper-page'));
       instance.on('changeState', (event: any) => {
         if (event.data === 'flipping') shouldPlayFlipSoundRef.current = flipSoundModeRef.current !== 'silent';
@@ -250,7 +251,7 @@ export default function Home({ sharedToken }: { sharedToken?: string }) {
     <AlertDialog open={Boolean(deleteBook)} onOpenChange={(open) => !open && setDeleteBook(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>이 책을 삭제하시겠습니까?</AlertDialogTitle><AlertDialogDescription>삭제하면 다시 복구할 수 없습니다.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={() => void removeBook()}>삭제</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
   </main>;
 
-  return <main ref={viewerRef} className={`reader-shell ${isMobile ? isSingle ? 'is-mobile is-mobile-portrait' : `is-mobile is-mobile-landscape${forcedLandscape ? ' is-forced-landscape' : ''}` : ''}`} onPointerDownCapture={primeAudio}>
+  return <main ref={viewerRef} className={`reader-shell ${isMobile ? mobilePortrait ? 'is-mobile is-mobile-portrait' : `is-mobile is-mobile-landscape${forcedLandscape ? ' is-forced-landscape' : ''}` : ''}`} onPointerDownCapture={primeAudio}>
     {!sharedToken && <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => { void openFile(event.target.files?.[0]); event.target.value = ''; }} />}
     <header className="reader-header">
       <div className="title-block"><BookOpen size={19} /><div><h1 title={title}>{title}</h1>{sharedToken && sharedExpiry && <small>이 책은 {expiryDate(sharedExpiry)}까지 볼 수 있습니다.</small>}</div></div>
