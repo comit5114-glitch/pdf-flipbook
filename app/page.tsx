@@ -1,13 +1,25 @@
 'use client';
 
 import { forwardRef, useCallback, useEffect, useRef, useState } from 'react';
-import { BookOpen, ChevronLeft, ChevronRight, Expand, FileUp, Grid2X2, Maximize2, RotateCcw, Volume2, VolumeX, X, ZoomIn, ZoomOut } from 'lucide-react';
+import { BookOpen, ChevronLeft, ChevronRight, Clock3, Copy, Expand, FileUp, Grid2X2, Maximize2, RotateCcw, Share2, Trash2, Volume2, VolumeX, X, ZoomIn, ZoomOut } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from '@/components/ui/alert-dialog';
 
 type PdfDocument = import('pdfjs-dist').PDFDocumentProxy;
 type PdfPage = import('pdfjs-dist').PDFPageProxy;
+type StoredBook = { id: string; title: string; createdAt: string; lastViewedAt: string; expiresAt: string; lastPage: number };
+
+function visitorId() {
+  const key = 'flipbook-visitor-id'; let value = window.localStorage.getItem(key);
+  if (!value) { value = crypto.randomUUID(); window.localStorage.setItem(key, value); }
+  return value;
+}
+
+function expiryDate(expiresAt: string) { return new Intl.DateTimeFormat('ko-KR', { year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(expiresAt)).replace(/\. /g, '.').replace('.', '.'); }
+function retentionLabel(expiresAt: string) { const hours = (new Date(expiresAt).getTime() - Date.now()) / 3600000; if (hours <= 24) return '오늘 만료'; if (hours <= 48) return '내일까지 보관됩니다'; return `남은 보관기간 ${Math.ceil(hours / 24)}일`; }
 
 function useMedia(query: string) {
   const [matches, setMatches] = useState(false);
@@ -62,56 +74,51 @@ function Thumbnail({ pdf, pageNumber, selected, onClick }: { pdf: PdfDocument; p
   return <button ref={rootRef} onClick={onClick} className={`thumbnail ${selected ? 'selected' : ''}`} aria-label={`${pageNumber}페이지로 이동`}><span className="thumb-paper"><canvas ref={canvasRef} /></span><span>{pageNumber}</span></button>;
 }
 
-export default function Home() {
-  const inputRef = useRef<HTMLInputElement>(null); const bookRef = useRef<any>(null); const bookElementRef = useRef<HTMLDivElement>(null); const viewerRef = useRef<HTMLDivElement>(null); const audioRef = useRef<AudioContext | null>(null); const soundSourceRef = useRef<AudioBufferSourceNode | null>(null);
+export default function Home({ sharedToken }: { sharedToken?: string }) {
+  const inputRef = useRef<HTMLInputElement>(null); const bookRef = useRef<any>(null); const bookElementRef = useRef<HTMLDivElement>(null); const viewerRef = useRef<HTMLDivElement>(null); const audioRef = useRef<HTMLAudioElement | null>(null); const currentFileRef = useRef<File | null>(null); const savingRef = useRef(false); const audioPrimedRef = useRef(false); const flipSoundModeRef = useRef<'sound' | 'silent' | null>(null); const shouldPlayFlipSoundRef = useRef(false);
   const isSingle = useMedia('(max-width: 780px)');
   const [pdf, setPdf] = useState<PdfDocument | null>(null); const [title, setTitle] = useState(''); const [pageCount, setPageCount] = useState(0); const [pageIndex, setPageIndex] = useState(0);
   const [ratio, setRatio] = useState(.707); const [viewport, setViewport] = useState({ width: 520, height: 735 }); const [zoom, setZoom] = useState(1); const [sound, setSound] = useState(true);
   const [thumbsOpen, setThumbsOpen] = useState(false); const [loading, setLoading] = useState(false); const [prepared, setPrepared] = useState(0); const [error, setError] = useState('');
+  const [recentBooks, setRecentBooks] = useState<StoredBook[]>([]); const [pendingFile, setPendingFile] = useState<File | null>(null); const [storageChoiceOpen, setStorageChoiceOpen] = useState(false); const [sharePromptOpen, setSharePromptOpen] = useState(false); const [shareMenuOpen, setShareMenuOpen] = useState(false); const [shareUrl, setShareUrl] = useState(''); const [sharedExpiry, setSharedExpiry] = useState(''); const [saving, setSaving] = useState(false); const [activeBook, setActiveBook] = useState<StoredBook | null>(null); const [initialPage, setInitialPage] = useState(0); const [deleteBook, setDeleteBook] = useState<StoredBook | null>(null); const [notice, setNotice] = useState('');
   const measure = useCallback(() => { const availableW = Math.max(280, window.innerWidth - (isSingle ? 28 : 96)); const availableH = Math.max(360, window.innerHeight - 178); const width = Math.floor(Math.min(availableH * ratio, availableW / (isSingle ? 1 : 2), 650)); setViewport({ width, height: Math.floor(width / ratio) }); }, [isSingle, ratio]);
   useEffect(() => { measure(); window.addEventListener('resize', measure); return () => window.removeEventListener('resize', measure); }, [measure]);
-  const unlockAudio = useCallback(() => {
-    const AudioCtor = window.AudioContext || (window as any).webkitAudioContext;
-    if (!AudioCtor) return;
-    const context = audioRef.current ?? new AudioCtor();
-    audioRef.current = context;
-    if (context.state === 'suspended') void context.resume();
+  useEffect(() => {
+    const savedSound = window.localStorage.getItem('flipbook-sound-enabled');
+    if (savedSound !== null) setSound(savedSound === 'true');
+    const audio = new Audio('/audio/page-turn.mp3');
+    audio.preload = 'auto'; audio.volume = .35;
+    audioRef.current = audio;
+    return () => { audio.pause(); audioRef.current = null; };
+  }, []);
+  const primeAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio || audioPrimedRef.current) return;
+    const volume = audio.volume; audio.volume = 0;
+    void audio.play().then(() => { audio.pause(); audio.currentTime = 0; audio.volume = volume; audioPrimedRef.current = true; }).catch(() => { audio.volume = volume; });
   }, []);
   const playFlip = useCallback(() => {
-    if (!sound) return;
-    unlockAudio();
-    const context = audioRef.current;
-    if (!context) return;
-    const renderSound = () => {
-      soundSourceRef.current?.stop();
-      const now = context.currentTime; const duration = .58; const length = Math.floor(context.sampleRate * duration); const buffer = context.createBuffer(1, length, context.sampleRate); const data = buffer.getChannelData(0);
-      let smoothed = 0;
-      for (let i = 0; i < length; i += 1) {
-        const t = i / context.sampleRate;
-        smoothed = smoothed * .72 + (Math.random() * 2 - 1) * .28;
-        const sweep = Math.sin(Math.PI * Math.min(1, t / .42));
-        const flutter = .72 + .16 * Math.sin(t * 82) + .1 * Math.sin(t * 137);
-        const landing = Math.exp(-Math.pow((t - .46) / .055, 2)) * .5;
-        const envelope = (t < .035 ? t / .035 : Math.max(0, 1 - (t - .035) / .54)) * (.2 + .8 * sweep) * flutter + landing;
-        data[i] = smoothed * envelope;
-      }
-      const source = context.createBufferSource(); const highpass = context.createBiquadFilter(); const lowpass = context.createBiquadFilter(); const gain = context.createGain();
-      highpass.type = 'highpass'; highpass.frequency.value = 150; lowpass.type = 'lowpass'; lowpass.Q.value = .45; lowpass.frequency.setValueAtTime(2200, now); lowpass.frequency.exponentialRampToValueAtTime(720, now + .43); lowpass.frequency.exponentialRampToValueAtTime(1350, now + .56);
-      gain.gain.setValueAtTime(.0001, now); gain.gain.exponentialRampToValueAtTime(.11, now + .025); gain.gain.setValueAtTime(.085, now + .32); gain.gain.exponentialRampToValueAtTime(.001, now + duration);
-      source.buffer = buffer; source.playbackRate.value = .96 + Math.random() * .08; source.connect(highpass).connect(lowpass).connect(gain).connect(context.destination); source.start(now); soundSourceRef.current = source; source.onended = () => { if (soundSourceRef.current === source) soundSourceRef.current = null; };
-    };
-    if (context.state === 'running') renderSound(); else void context.resume().then(renderSound).catch(() => undefined);
-  }, [sound, unlockAudio]);
+    const audio = audioRef.current;
+    if (!sound || !audio) return;
+    audio.pause(); audio.currentTime = 0; audio.volume = .35;
+    void audio.play().catch(() => undefined);
+  }, [sound]);
   useEffect(() => {
     if (!pdf || !bookElementRef.current) return;
     let disposed = false;
     const mount = () => {
       if (disposed || !bookElementRef.current || !(window as any).St?.PageFlip) return;
       bookRef.current?.destroy?.();
-      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 240, maxWidth: 700, minHeight: 320, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: pageIndex, autoSize: false, startZIndex: 0 });
+      const instance = new (window as any).St.PageFlip(bookElementRef.current, { width: viewport.width, height: viewport.height, size: 'fixed', minWidth: 240, maxWidth: 700, minHeight: 320, maxHeight: 990, showCover: true, usePortrait: isSingle, drawShadow: true, flippingTime: 680, maxShadowOpacity: .28, mobileScrollSupport: true, clickEventForward: true, useMouseEvents: true, swipeDistance: 20, showPageCorners: true, disableFlipByClick: false, startPage: initialPage, autoSize: false, startZIndex: 0 });
       instance.loadFromHTML(bookElementRef.current.querySelectorAll('.paper-page'));
-      instance.on('changeState', (event: any) => { if (event.data === 'flipping') playFlip(); });
-      instance.on('flip', (event: any) => { setPageIndex(event.data); });
+      instance.on('changeState', (event: any) => {
+        if (event.data === 'flipping') shouldPlayFlipSoundRef.current = flipSoundModeRef.current !== 'silent';
+      });
+      instance.on('flip', (event: any) => {
+        setPageIndex(event.data);
+        if (shouldPlayFlipSoundRef.current) playFlip();
+        shouldPlayFlipSoundRef.current = false; flipSoundModeRef.current = null;
+      });
       bookRef.current = instance;
     };
     const existing = document.querySelector<HTMLScriptElement>('script[data-page-flip]');
@@ -119,28 +126,73 @@ export default function Home() {
     else if (existing) existing.addEventListener('load', mount, { once: true });
     else { const script = document.createElement('script'); script.src = '/page-flip.browser.js'; script.dataset.pageFlip = 'true'; script.onload = mount; document.head.appendChild(script); }
     return () => { disposed = true; existing?.removeEventListener('load', mount); bookRef.current?.destroy?.(); bookRef.current = null; };
-  }, [isSingle, pageCount, pdf, playFlip, viewport.height, viewport.width]);
-  const openFile = useCallback(async (file?: File) => {
-    if (!file) return; if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { setError('PDF 파일을 선택해주세요.'); return; }
+  }, [initialPage, isSingle, pageCount, pdf, playFlip, viewport.height, viewport.width]);
+  const loadPdf = useCallback(async (file: Blob, bookTitle: string, savedPage = 1) => {
     setLoading(true); setPrepared(0); setError(''); setPdf(null);
-    try { const browserPdfPath = '/pdf.min.mjs'; const importBrowserModule = new Function('path', 'return import(path)') as (path: string) => Promise<any>; const pdfjs = await importBrowserModule(browserPdfPath); pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; const bytes = new Uint8Array(await file.arrayBuffer()); const task = pdfjs.getDocument({ data: bytes }); task.onPassword = (updatePassword: (password: string) => void, reason: number) => { const password = window.prompt(reason === 1 ? '이 PDF는 암호가 필요합니다. 암호를 입력해주세요.' : '암호가 올바르지 않습니다. 다시 입력해주세요.'); if (password === null) task.destroy(); else updatePassword(password); }; const document = await task.promise; const first = await document.getPage(1); const size = first.getViewport({ scale: 1 }); setRatio(size.width / size.height); await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); setTitle(file.name.replace(/\.pdf$/i, '')); setPageCount(document.numPages); setPageIndex(0); setZoom(1); setPdf(document); }
+    try { const browserPdfPath = '/pdf.min.mjs'; const importBrowserModule = new Function('path', 'return import(path)') as (path: string) => Promise<any>; const pdfjs = await importBrowserModule(browserPdfPath); pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs'; const bytes = new Uint8Array(await file.arrayBuffer()); const task = pdfjs.getDocument({ data: bytes }); task.onPassword = (updatePassword: (password: string) => void, reason: number) => { const password = window.prompt(reason === 1 ? '이 PDF는 암호가 필요합니다. 암호를 입력해주세요.' : '암호가 올바르지 않습니다. 다시 입력해주세요.'); if (password === null) task.destroy(); else updatePassword(password); }; const document = await task.promise; const first = await document.getPage(1); const size = first.getViewport({ scale: 1 }); const requested = Number.isFinite(savedPage) ? Math.floor(savedPage) - 1 : 0; const start = Math.max(0, Math.min(requested, document.numPages - 1)); setRatio(size.width / size.height); await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve()))); setTitle(bookTitle.replace(/\.pdf$/i, '')); setPageCount(document.numPages); setInitialPage(start); setPageIndex(start); setZoom(1); setPdf(document); return { document, first }; }
     catch (cause: any) { setLoading(false); setError(cause?.name === 'PasswordException' ? '암호가 필요한 PDF입니다. 암호를 확인해주세요.' : 'PDF 파일을 열 수 없습니다.'); }
   }, []);
+  const openFile = useCallback((file?: File) => { if (!file) return; if (file.type !== 'application/pdf' && !file.name.toLowerCase().endsWith('.pdf')) { setError('PDF 파일을 선택해주세요.'); return; } setPendingFile(file); setStorageChoiceOpen(true); }, []);
+  const savePdf = useCallback(async (file: File) => {
+    if (savingRef.current) return null; savingRef.current = true; setSaving(true); setError(''); setNotice('PDF를 7일간 보관하는 중입니다…');
+    try {
+      const form = new FormData(); form.append('file', file); form.append('visitorId', visitorId()); form.append('title', file.name.replace(/\.pdf$/i, ''));
+      const response = await fetch('/api/books', { method: 'POST', body: form }); const data = await response.json(); if (!response.ok) throw new Error(data.error);
+      setActiveBook(data.book); setRecentBooks((books) => [data.book, ...books.filter((book) => book.id !== data.book.id)]); setNotice(`이 PDF를 7일 동안 보관합니다. ${expiryDate(data.book.expiresAt)}까지 보관됩니다.`); return data.book as StoredBook;
+    } catch (cause: any) { setNotice(''); setError(cause?.message ?? 'PDF를 보관하지 못했습니다. 잠시 후 다시 시도해주세요.'); return null; }
+    finally { savingRef.current = false; setSaving(false); }
+  }, []);
+  const chooseStorage = useCallback(async (store: boolean) => {
+    const file = pendingFile; if (!file) return; setStorageChoiceOpen(false); const loaded = await loadPdf(file, file.name);
+    if (!loaded) { setPendingFile(null); return; } currentFileRef.current = file; setActiveBook(null); if (store) await savePdf(file); setPendingFile(null);
+  }, [loadPdf, pendingFile, savePdf]);
+  const continueBook = useCallback(async (book: StoredBook) => { try { setLoading(true); setError(''); const response = await fetch(`/api/books/${book.id}?visitorId=${encodeURIComponent(visitorId())}`); const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfResponse = await fetch(data.pdfUrl); if (!pdfResponse.ok) throw new Error(pdfResponse.status === 404 ? '이 책의 파일을 찾을 수 없습니다.' : '저장된 책을 불러오지 못했습니다.'); currentFileRef.current = null; setActiveBook({ ...book, ...data.book }); await loadPdf(await pdfResponse.blob(), data.book.title, data.book.lastPage); } catch (cause: any) { setLoading(false); setError(cause?.message ?? '저장된 책을 불러오지 못했습니다.'); } }, [loadPdf]);
+  useEffect(() => { if (sharedToken) return; const bookId = window.location.pathname.match(/^\/book\/([^/]+)/)?.[1]; if (bookId) void continueBook({ id: bookId, title: '', createdAt: '', lastViewedAt: '', expiresAt: '', lastPage: 1 }); }, [continueBook, sharedToken]);
+  useEffect(() => {
+    if (sharedToken) return;
+    void fetch(`/api/books?visitorId=${encodeURIComponent(visitorId())}`).then(async (response) => { if (!response.ok) throw new Error(); setRecentBooks((await response.json()).books); }).catch(() => setError('저장된 책을 불러오지 못했습니다.'));
+  }, [sharedToken]);
+  useEffect(() => {
+    if (!sharedToken) return; setLoading(true); setError(''); setActiveBook(null); currentFileRef.current = null;
+    void fetch(`/api/share/${encodeURIComponent(sharedToken)}`).then(async (response) => { const data = await response.json(); if (!response.ok) throw new Error(data.error); const pdfResponse = await fetch(data.pdfUrl); if (!pdfResponse.ok) throw new Error('이 책의 파일을 찾을 수 없습니다.'); const savedPage = Number(window.localStorage.getItem(`shared-book-${sharedToken}-last-page`)) || 1; setSharedExpiry(data.book.expiresAt); await loadPdf(await pdfResponse.blob(), data.book.title, savedPage); }).catch((cause) => { setLoading(false); setError(cause?.message ?? '유효하지 않은 공유 링크입니다.'); });
+  }, [loadPdf, sharedToken]);
   const onReady = useCallback((page: number) => { setPrepared((value) => Math.max(value, page)); if (page === 1) setLoading(false); }, []);
-  const flip = useCallback((where: 'first' | 'prev' | 'next' | 'last') => { const api = bookRef.current; if (!api) return; if (where === 'first') api.flip(0); if (where === 'prev') api.flipPrev(); if (where === 'next') api.flipNext(); if (where === 'last') api.flip(pageCount - 1); }, [pageCount]);
-  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') unlockAudio(); if (event.key === 'ArrowLeft') flip('prev'); if (event.key === 'ArrowRight') flip('next'); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [flip, unlockAudio]);
+  const flip = useCallback((where: 'first' | 'prev' | 'next' | 'last') => { const api = bookRef.current; if (!api) return; flipSoundModeRef.current = where === 'prev' || where === 'next' ? 'sound' : 'silent'; if (where === 'first') api.flip(0); if (where === 'prev') api.flipPrev(); if (where === 'next') api.flipNext(); if (where === 'last') api.flip(pageCount - 1); }, [pageCount]);
+  useEffect(() => { const onKey = (event: KeyboardEvent) => { if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') primeAudio(); if (event.key === 'ArrowLeft') flip('prev'); if (event.key === 'ArrowRight') flip('next'); }; window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey); }, [flip, primeAudio]);
+  const toggleSound = useCallback(() => { setSound((current) => { const next = !current; window.localStorage.setItem('flipbook-sound-enabled', String(next)); if (!next && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0; } else if (next) primeAudio(); return next; }); }, [primeAudio]);
+  useEffect(() => { if (!activeBook) return; const timer = window.setTimeout(() => { void fetch(`/api/books/${activeBook.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId(), lastPage: pageIndex + 1 }) }); }, 750); return () => window.clearTimeout(timer); }, [activeBook, pageIndex]);
+  useEffect(() => { if (sharedToken && pdf) window.localStorage.setItem(`shared-book-${sharedToken}-last-page`, String(pageIndex + 1)); }, [pageIndex, pdf, sharedToken]);
+  const openShare = useCallback(async (book: StoredBook) => { try { setError(''); const response = await fetch(`/api/books/${book.id}/share`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId() }) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setShareUrl(`${window.location.origin}/share/${data.shareToken}`); setSharedExpiry(data.expiresAt); setShareMenuOpen(true); } catch (cause: any) { setError(cause?.message ?? '공유 링크를 만들지 못했습니다.'); } }, []);
+  const copyShareLink = useCallback(async () => { try { await navigator.clipboard.writeText(shareUrl); setNotice('공유 링크가 복사되었습니다.'); } catch { setNotice('링크를 직접 선택해 복사해주세요.'); } }, [shareUrl]);
+  const shareNative = useCallback(async () => { if (!navigator.share) { await copyShareLink(); return; } try { await navigator.share({ title, text: '책장을 넘기듯 편하게 읽어보세요.', url: shareUrl }); } catch (cause: any) { if (cause?.name !== 'AbortError') await copyShareLink(); } }, [copyShareLink, shareUrl, title]);
+  const stopSharing = useCallback(async () => { if (!activeBook) return; try { const response = await fetch(`/api/books/${activeBook.id}/share`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId() }) }); if (!response.ok) throw new Error(); setShareMenuOpen(false); setNotice('공유를 중지했습니다.'); } catch { setError('공유를 중지하지 못했습니다.'); } }, [activeBook]);
+  const removeBook = useCallback(async () => { if (!deleteBook) return; const target = deleteBook; setRecentBooks((books) => books.filter((book) => book.id !== target.id)); setDeleteBook(null); try { const response = await fetch(`/api/books/${target.id}`, { method: 'DELETE', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ visitorId: visitorId() }) }); if (!response.ok) throw new Error(); setNotice('책이 삭제되었습니다.'); } catch { setRecentBooks((books) => [target, ...books].sort((a, b) => new Date(b.lastViewedAt).getTime() - new Date(a.lastViewedAt).getTime())); setError('책을 삭제하지 못했습니다. 잠시 후 다시 시도해주세요.'); } }, [deleteBook]);
   const visibleStart = pageIndex + 1;
   const visibleEnd = isSingle || pageIndex === 0 ? visibleStart : Math.min(pageIndex + 2, pageCount);
   const range = visibleEnd === visibleStart ? `${visibleStart}` : `${visibleStart}-${visibleEnd}`;
 
-  if (!pdf) return <main className="welcome-shell"><input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(e) => void openFile(e.target.files?.[0])} /><section className="welcome-card"><div className="book-mark"><BookOpen size={31} strokeWidth={1.5} /></div><p className="eyebrow">PRIVATE PDF READER</p><h1>책장을 넘기다</h1><p className="welcome-copy">PDF 파일을 선택하면 실제 책처럼 넘겨볼 수 있습니다.</p><Button size="lg" onClick={() => inputRef.current?.click()} className="upload-button"><FileUp size={19} /> PDF 파일 선택</Button><p className="privacy-note">파일은 서버로 전송되지 않고 이 브라우저 안에서만 열립니다.</p>{error && <p className="error-message" role="alert">{error}</p>}</section><p className="welcome-footer">나만의 조용한 디지털 서재</p></main>;
+  if (!pdf && sharedToken) return <main className="welcome-shell"><section className="welcome-card"><div className="book-mark"><BookOpen size={31} strokeWidth={1.5} /></div><p className="eyebrow">SHARED PDF READER</p><h1>공유받은 책</h1><p className="welcome-copy">{error || '책을 불러오고 있습니다…'}</p>{!error && <Progress value={45} />}{error && <Button onClick={() => { window.location.href = '/'; }}>홈으로</Button>}</section></main>;
 
-  return <main ref={viewerRef} className="reader-shell" onPointerDownCapture={unlockAudio}>
-    <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(e) => void openFile(e.target.files?.[0])} />
-    <header className="reader-header"><div className="title-block"><BookOpen size={19} /><h1 title={title}>{title}</h1></div><div className="toolbar"><Button variant="outline" size="sm" onClick={() => setThumbsOpen(true)}><Grid2X2 /><span>페이지 목록</span></Button><div className="button-cluster"><Button variant="ghost" size="icon-sm" aria-label="축소" onClick={() => setZoom((z) => Math.max(.7, +(z - .1).toFixed(1)))}><ZoomOut /></Button><span className="zoom-label">{Math.round(zoom * 100)}%</span><Button variant="ghost" size="icon-sm" aria-label="확대" onClick={() => setZoom((z) => Math.min(2, +(z + .1).toFixed(1)))}><ZoomIn /></Button></div><Button variant="outline" size="sm" onClick={() => setZoom(1)}><Expand /><span>화면 맞춤</span></Button><Button variant="outline" size="icon-sm" aria-label={sound ? '소리 끄기' : '소리 켜기'} onClick={() => { if (!sound) unlockAudio(); setSound((v) => !v); }}>{sound ? <Volume2 /> : <VolumeX />}</Button><Button variant="outline" size="sm" onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 /><span>크게 보기</span></Button><Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}><RotateCcw /><span>다른 PDF</span></Button></div></header>
-    <section className={`book-viewport ${zoom > 1 ? 'is-zoomed' : ''}`}><div className="ambient-shadow" /><div className="zoom-stage" style={{ width: viewport.width * (isSingle ? 1 : 2), height: viewport.height, transform: `scale(${zoom})` }}><div key={`${title}-${viewport.width}-${isSingle}`} ref={bookElementRef} className="flip-book">{Array.from({ length: pageCount }, (_, index) => <PaperPage key={index + 1} pdf={pdf} pageNumber={index + 1} width={viewport.width} height={viewport.height} active={Math.abs(index - pageIndex) <= 4 || index === 0} onReady={onReady} />)}</div></div></section>
+  if (!pdf) return <main className="welcome-shell recent-welcome"><input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => { void openFile(event.target.files?.[0]); event.target.value = ''; }} />
+    <section className="welcome-card library-card"><div className="book-mark"><BookOpen size={31} strokeWidth={1.5} /></div><p className="eyebrow">PRIVATE PDF READER</p><h1>책장을 넘기다</h1>
+        {recentBooks.length > 0 && <div className="recent-section"><div className="section-heading"><Clock3 size={17} /><h2>최근에 보던 책</h2></div>{recentBooks.map((book) => <article className="recent-book" key={book.id}><div className="recent-cover"><BookOpen /></div><div className="recent-info"><h3>{book.title}</h3><div className="book-meta"><span>최근 읽은 페이지 <b>{book.lastPage || 1}페이지</b></span><span>보관 만료 <b>{expiryDate(book.expiresAt)}</b></span></div><p className={retentionLabel(book.expiresAt) === '오늘 만료' ? 'expires-today' : ''}>{retentionLabel(book.expiresAt)}</p><div className="recent-actions"><Button size="sm" onClick={() => void continueBook(book)}>계속 보기</Button><Button size="icon-sm" variant="ghost" aria-label="삭제" onClick={() => setDeleteBook(book)}><Trash2 /></Button></div></div></article>)}</div>}
+        <p className="welcome-copy">PDF를 열어 바로 보거나 7일간 보관해 다시 읽을 수 있습니다.</p><Button size="lg" onClick={() => inputRef.current?.click()} className="upload-button"><FileUp size={19} /> {recentBooks.length ? '새 PDF 열기' : 'PDF 파일 선택'}</Button><p className="privacy-note">‘이번만 보기’를 선택하면 파일은 서버로 전송되지 않습니다.</p>{notice && <p className="success-message">{notice}</p>}{error && <p className="error-message" role="alert">{error}</p>}
+    </section>
+    <Dialog open={storageChoiceOpen} onOpenChange={setStorageChoiceOpen}><DialogContent><DialogHeader><DialogTitle>PDF를 어떻게 열까요?</DialogTitle><DialogDescription>보관 방식을 선택해주세요. 나중에 변경할 수 없습니다.</DialogDescription></DialogHeader><div className="storage-options"><button onClick={() => void chooseStorage(false)}><BookOpen /><strong>이번만 보기</strong><span>현재 브라우저에서만 열고 서버에는 저장하지 않습니다.</span></button><button onClick={() => void chooseStorage(true)}><Clock3 /><strong>7일간 보관</strong><span>7일 동안 다시 첨부하지 않고 읽을 수 있습니다.</span></button></div></DialogContent></Dialog>
+    <Dialog open={sharePromptOpen} onOpenChange={setSharePromptOpen}><DialogContent><DialogHeader><DialogTitle>먼저 7일 보관이 필요합니다</DialogTitle><DialogDescription>공유하려면 먼저 이 PDF를 7일간 보관해야 합니다.</DialogDescription></DialogHeader><div className="dialog-actions"><Button variant="outline" onClick={() => setSharePromptOpen(false)}>취소</Button><Button disabled={!currentFileRef.current || saving} onClick={async () => { const file = currentFileRef.current; if (!file) return; const book = await savePdf(file); if (book) { setSharePromptOpen(false); await openShare(book); } }}><Clock3 />{saving ? '보관 중…' : '7일 보관 후 공유'}</Button></div></DialogContent></Dialog>
+    <AlertDialog open={Boolean(deleteBook)} onOpenChange={(open) => !open && setDeleteBook(null)}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>이 책을 삭제하시겠습니까?</AlertDialogTitle><AlertDialogDescription>삭제하면 다시 복구할 수 없습니다.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>취소</AlertDialogCancel><AlertDialogAction onClick={() => void removeBook()}>삭제</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>
+  </main>;
+
+  return <main ref={viewerRef} className="reader-shell" onPointerDownCapture={primeAudio}>
+    {!sharedToken && <input ref={inputRef} type="file" accept="application/pdf,.pdf" className="sr-only" onChange={(event) => { void openFile(event.target.files?.[0]); event.target.value = ''; }} />}
+    <header className="reader-header"><div className="title-block"><BookOpen size={19} /><div><h1 title={title}>{title}</h1>{sharedToken && sharedExpiry && <small>이 책은 {expiryDate(sharedExpiry)}까지 볼 수 있습니다.</small>}</div></div><div className="toolbar"><Button variant="outline" size="sm" onClick={() => setThumbsOpen(true)}><Grid2X2 /><span>페이지 목록</span></Button><div className="button-cluster"><Button variant="ghost" size="icon-sm" aria-label="축소" onClick={() => setZoom((z) => Math.max(.7, +(z - .1).toFixed(1)))}><ZoomOut /></Button><span className="zoom-label">{Math.round(zoom * 100)}%</span><Button variant="ghost" size="icon-sm" aria-label="확대" onClick={() => setZoom((z) => Math.min(2, +(z + .1).toFixed(1)))}><ZoomIn /></Button></div><Button variant="outline" size="sm" onClick={() => setZoom(1)}><Expand /><span>화면 맞춤</span></Button><Button variant="outline" size="sm" aria-label={sound ? '🔊 소리 켜짐' : '🔇 소리 꺼짐'} onClick={toggleSound}>{sound ? <Volume2 /> : <VolumeX />}<span>{sound ? '소리 켜짐' : '소리 꺼짐'}</span></Button><Button variant="outline" size="sm" onClick={() => document.fullscreenElement ? document.exitFullscreen() : viewerRef.current?.requestFullscreen()}><Maximize2 /><span>크게 보기</span></Button>{!sharedToken && <Button className="retention-button" variant="outline" size="sm" disabled={Boolean(activeBook) || saving} onClick={() => currentFileRef.current && void savePdf(currentFileRef.current)}><Clock3 /><span>{saving ? '보관 중…' : activeBook ? '7일 보관 중' : '7일 보관'}</span></Button>}{!sharedToken && <Button className="share-button" variant="outline" size="sm" onClick={() => activeBook ? void openShare(activeBook) : setSharePromptOpen(true)}><Share2 /><span>공유하기</span></Button>}{!sharedToken && <Button variant="outline" size="sm" onClick={() => inputRef.current?.click()}><RotateCcw /><span>다른 PDF</span></Button>}</div></header>
+    <section className={`book-viewport ${zoom > 1 ? 'is-zoomed' : ''}`}><div className="ambient-shadow" /><div className="zoom-stage" style={{ width: viewport.width * (isSingle ? 1 : 2), height: viewport.height, transform: `scale(${zoom})` }}><div key={`${title}-${viewport.width}-${isSingle}`} ref={bookElementRef} className="flip-book">{Array.from({ length: pageCount }, (_, index) => <PaperPage key={index + 1} pdf={pdf} pageNumber={index + 1} width={viewport.width} height={viewport.height} active={Math.abs(index - pageIndex) <= 4 || index === 0} onReady={onReady} />)}</div>{!isSingle && <div className="book-spine" aria-hidden="true" />}</div></section>
+    {(notice || error) && <div className={`reader-notice ${error ? 'is-error' : ''}`}>{error || notice}</div>}
     <footer className="reader-footer"><div className="nav-pair"><Button variant="outline" size="sm" onClick={() => flip('first')} disabled={pageIndex === 0}>처음</Button><Button variant="outline" size="sm" onClick={() => flip('prev')} disabled={pageIndex === 0}><ChevronLeft /> 이전</Button></div><div className="page-status"><span>{range}</span><span className="slash">/</span><span>{pageCount}</span></div><div className="nav-pair"><Button variant="outline" size="sm" onClick={() => flip('next')} disabled={pageIndex >= pageCount - 1}>다음 <ChevronRight /></Button><Button variant="outline" size="sm" onClick={() => flip('last')} disabled={pageIndex >= pageCount - 1}>마지막</Button></div></footer>
     {loading && <div className="loading-overlay"><div className="loading-card"><BookOpen className="loading-book" /><h2>책을 준비하고 있습니다...</h2><p>{Math.max(1, prepared)} / {pageCount || '—'} 페이지 준비 중</p><Progress value={pageCount ? prepared / pageCount * 100 : 8} /></div></div>}
-    <Sheet open={thumbsOpen} onOpenChange={setThumbsOpen}><SheetContent side="right" className="thumb-sheet"><SheetHeader><SheetTitle>페이지 목록</SheetTitle></SheetHeader><Button variant="ghost" size="icon" className="sheet-close" onClick={() => setThumbsOpen(false)} aria-label="페이지 목록 닫기"><X /></Button><div className="thumbnail-grid">{Array.from({ length: pageCount }, (_, index) => <Thumbnail key={index + 1} pdf={pdf} pageNumber={index + 1} selected={Math.abs(index - pageIndex) <= (isSingle ? 0 : 1)} onClick={() => { bookRef.current?.flip(index); setThumbsOpen(false); }} />)}</div></SheetContent></Sheet>
+    <Dialog open={storageChoiceOpen} onOpenChange={setStorageChoiceOpen}><DialogContent><DialogHeader><DialogTitle>PDF를 어떻게 열까요?</DialogTitle><DialogDescription>보관 방식을 선택해주세요. 나중에 변경할 수 없습니다.</DialogDescription></DialogHeader><div className="storage-options"><button onClick={() => void chooseStorage(false)}><BookOpen /><strong>이번만 보기</strong><span>현재 브라우저에서만 열고 서버에는 저장하지 않습니다.</span></button><button onClick={() => void chooseStorage(true)}><Clock3 /><strong>7일간 보관</strong><span>7일 동안 다시 첨부하지 않고 읽을 수 있습니다.</span></button></div></DialogContent></Dialog>
+    <Dialog open={sharePromptOpen} onOpenChange={setSharePromptOpen}><DialogContent><DialogHeader><DialogTitle>먼저 7일 보관이 필요합니다</DialogTitle><DialogDescription>공유하려면 먼저 이 PDF를 7일간 보관해야 합니다.</DialogDescription></DialogHeader><div className="dialog-actions"><Button variant="outline" onClick={() => setSharePromptOpen(false)}>취소</Button><Button disabled={!currentFileRef.current || saving} onClick={async () => { const file = currentFileRef.current; if (!file) return; const book = await savePdf(file); if (book) { setSharePromptOpen(false); await openShare(book); } }}><Clock3 />{saving ? '보관 중…' : '7일 보관 후 공유'}</Button></div></DialogContent></Dialog>
+    <Dialog open={shareMenuOpen} onOpenChange={setShareMenuOpen}><DialogContent><DialogHeader><DialogTitle>{title}</DialogTitle><DialogDescription>공유 가능 기간: {sharedExpiry ? `${expiryDate(sharedExpiry)}까지` : '확인 중'}</DialogDescription></DialogHeader><label className="share-url-label" htmlFor="share-url">공유 링크</label><input id="share-url" className="share-url-input" value={shareUrl} readOnly onFocus={(event) => event.currentTarget.select()} /><div className="share-actions"><Button onClick={() => void shareNative()}><Share2 />공유하기</Button><Button variant="outline" onClick={() => void copyShareLink()}><Copy />링크 복사</Button><Button variant="outline" onClick={() => void stopSharing()}>공유 중지</Button><Button variant="ghost" onClick={() => setShareMenuOpen(false)}>닫기</Button></div></DialogContent></Dialog>
+    <Sheet open={thumbsOpen} onOpenChange={setThumbsOpen}><SheetContent side="right" className="thumb-sheet"><SheetHeader><SheetTitle>페이지 목록</SheetTitle></SheetHeader><Button variant="ghost" size="icon" className="sheet-close" onClick={() => setThumbsOpen(false)} aria-label="페이지 목록 닫기"><X /></Button><div className="thumbnail-grid">{Array.from({ length: pageCount }, (_, index) => <Thumbnail key={index + 1} pdf={pdf} pageNumber={index + 1} selected={Math.abs(index - pageIndex) <= (isSingle ? 0 : 1)} onClick={() => { flipSoundModeRef.current = 'silent'; bookRef.current?.flip(index); setThumbsOpen(false); }} />)}</div></SheetContent></Sheet>
   </main>;
 }

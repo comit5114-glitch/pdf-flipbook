@@ -41,6 +41,17 @@ export default defineConfig(async () => {
   process.env.WRANGLER_LOG_PATH ??= '.wrangler/logs';
   process.env.MINIFLARE_REGISTRY_PATH ??= '.wrangler/registry';
 
+  // Vercel runs the app through Nitro so dynamic App Router pages and API
+  // handlers become Vercel Functions. Keep the existing Cloudflare/Sites
+  // configuration for local development and its original hosting target.
+  if (process.env.VERCEL === '1') {
+    const { nitro } = await import('nitro/vite');
+    const { default: tailwindcssVite } = await import('@tailwindcss/vite');
+    return {
+      plugins: [tailwindcssVite(), vinext(), sites(), nitro()],
+    };
+  }
+
   // Wrangler snapshots its log path while the Cloudflare plugin is imported.
   const { cloudflare } = await import('@cloudflare/vite-plugin');
 
